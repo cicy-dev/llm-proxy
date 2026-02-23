@@ -17,6 +17,8 @@ if os.path.exists(ENV_FILE):
                 key, val = line.split('=', 1)
                 os.environ[key.strip()] = val.strip()
 
+TG_PREVIEW_LEN = int(os.getenv("TG_PREVIEW_LEN", "50"))
+
 TARGET_DOMAINS = [
     "api.openai.com",
     "api.anthropic.com",
@@ -186,9 +188,9 @@ class LLMTracker:
             cursor.close()
             conn.close()
 
-            preview = answer[:50] + ("..." if len(answer) > 50 else "")
+            preview = answer[:TG_PREVIEW_LEN] + ("..." if len(answer) > TG_PREVIEW_LEN else "")
             msg = f"🤖 #{record_id} | {model}\n{preview}"
-            self._notify_tg(pane_id, msg, record_id if len(answer) > 50 else None)
+            self._notify_tg(pane_id, msg, record_id if len(answer) > TG_PREVIEW_LEN else None)
         except Exception as e:
             ctx.log.error(f"[QA SAVE ERROR] {e}")
 
