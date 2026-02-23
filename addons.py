@@ -69,10 +69,10 @@ class LLMTracker:
         if not cfg:
             return
         url = f"https://api.telegram.org/bot{cfg['tg_token']}/sendMessage"
-        if len(text) > 4000:
-            text = text[-4000:]
+        # Send preview only
+        preview = text[:200] + ("..." if len(text) > 200 else "")
         try:
-            _requests.post(url, json={"chat_id": cfg["tg_chat_id"], "text": text}, timeout=10)
+            _requests.post(url, json={"chat_id": cfg["tg_chat_id"], "text": preview}, timeout=10)
         except Exception as e:
             ctx.log.error(f"[TG SEND ERROR] {e}")
 
@@ -99,11 +99,7 @@ class LLMTracker:
         if status_code == 403:
             ctx.log.error(f"[❌ 地区封锁] 访问 {url} 被 Cloudflare 拦截 (403)。请检查服务器 IP 或挂载上游代理。")
 
-        _executor.submit(self._save_to_db, flow)
-
-        pane_id = flow.request.headers.get("X-Pane-Id", "")
-        if pane_id:
-            _executor.submit(self._notify_tg_from_flow, pane_id, flow)
+        _executor.submit(self._save_qa_and_notify, pane_id, flow) if pane_id else _executor.submit(self._save_to_db, flow)
 
     def _extract_llm_answer(self, body: str) -> str:
         """Extract text content from LLM API response."""
@@ -123,14 +119,68 @@ class LLMTracker:
             pass
         return ""
 
-    def _notify_tg_from_flow(self, pane_id: str, flow: http.HTTPFlow):
+    def _extract_llm_question(self, body: str) -> str:
+        """Extract user message from LLM API request."""
         try:
+            data = json.loads(body)
+            messages = data.get("messages", [])
+            for msg in reversed(messages):
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        return " ".join(c.get("text", "") for c in content if c.get("type") == "text")
+                    return content
+        except Exception:
+            pass
+        return ""
+
+    def _extract_model(self, req_body: str, res_body: str) -> str:
+        for body in [res_body, req_body]:
+            try:
+                return json.loads(body).get("model", "")
+            except Exception:
+                pass
+        return ""
+
+    def _extract_token_usage(self, body: str) -> str:
+        try:
+            usage = json.loads(body).get("usage")
+            if usage:
+                return json.dumps(usage)
+        except Exception:
+            pass
+        return ""
+
+    def _save_qa_and_notify(self, pane_id: str, flow: http.HTTPFlow):
+        try:
+            req_body = flow.request.content.decode("utf-8", errors="ignore") if flow.request.content else ""
             res_body = flow.response.content.decode("utf-8", errors="ignore") if flow.response.content else ""
+            question = self._extract_llm_question(req_body)
             answer = self._extract_llm_answer(res_body)
-            if answer:
-                self._notify_tg(pane_id, f"🤖 {pane_id}\n{answer}")
+            model = self._extract_model(req_body, res_body)
+            token_usage = self._extract_token_usage(res_body)
+
+            if not answer:
+                return
+
+            conn = mysql.connector.connect(**self.db_config)
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO llm_qa_history (pane_id, model, question, answer, token_usage) VALUES (%s,%s,%s,%s,%s)",
+                (pane_id, model, question[:65535], answer[:65535], token_usage)
+            )
+            record_id = cursor.lastrowid
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            preview = answer[:200] + ("..." if len(answer) > 200 else "")
+            self._notify_tg(pane_id, f"🤖 #{record_id} | {model}\n{preview}")
         except Exception as e:
-            ctx.log.error(f"[TG NOTIFY ERROR] {e}")
+            ctx.log.error(f"[QA SAVE ERROR] {e}")
+
+    def _notify_tg_from_flow(self, pane_id: str, flow: http.HTTPFlow):
+        self._save_qa_and_notify(pane_id, flow)
 
     def _save_to_db(self, flow: http.HTTPFlow):
         try:
