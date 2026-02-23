@@ -1,0 +1,20 @@
+database:
+  host: 127.0.0.1
+  port: 3306
+  user: root
+  password: pb200898
+  name: llm_qa_history
+
+proxy:
+  listen_port: 18080
+  target_domains:
+    - api.openai.com
+    - api.anthropic.com
+    - generativelanguage.googleapis.com
+    - api.google.com
+    - api.cohere.ai
+    - api.mistral.ai
+    - opencode.ai
+
+logging:
+  level: INFO
