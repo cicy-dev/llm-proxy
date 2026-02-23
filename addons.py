@@ -64,17 +64,29 @@ class LLMTracker:
             ctx.log.error(f"[TG CONFIG ERROR] {e}")
         return {}
 
-    def _notify_tg(self, pane_id: str, text: str):
+    def _notify_tg(self, pane_id: str, text: str, record_id: int = None):
         cfg = self._get_tg_config(pane_id)
         if not cfg:
             return
         url = f"https://api.telegram.org/bot{cfg['tg_token']}/sendMessage"
-        # Send preview only
-        preview = text[:200] + ("..." if len(text) > 200 else "")
+        payload = {"chat_id": cfg["tg_chat_id"], "text": text}
+        if record_id:
+            token = self._load_api_token()
+            detail_url = f"http://localhost:14444/api/qa/{record_id}?token={token}"
+            payload["reply_markup"] = json.dumps({
+                "inline_keyboard": [[{"text": "📄 Detail", "url": detail_url}]]
+            })
         try:
-            _requests.post(url, json={"chat_id": cfg["tg_chat_id"], "text": preview}, timeout=10)
+            _requests.post(url, json=payload, timeout=10)
         except Exception as e:
             ctx.log.error(f"[TG SEND ERROR] {e}")
+
+    def _load_api_token(self) -> str:
+        try:
+            with open("/home/w3c_offical/global.json") as f:
+                return json.load(f).get("api_token", "")
+        except Exception:
+            return ""
 
     def _is_target(self, flow: http.HTTPFlow) -> bool:
         host = flow.request.pretty_host
@@ -174,8 +186,9 @@ class LLMTracker:
             cursor.close()
             conn.close()
 
-            preview = answer[:200] + ("..." if len(answer) > 200 else "")
-            self._notify_tg(pane_id, f"🤖 #{record_id} | {model}\n{preview}")
+            preview = answer[:50] + ("..." if len(answer) > 50 else "")
+            msg = f"🤖 #{record_id} | {model}\n{preview}"
+            self._notify_tg(pane_id, msg, record_id if len(answer) > 50 else None)
         except Exception as e:
             ctx.log.error(f"[QA SAVE ERROR] {e}")
 
