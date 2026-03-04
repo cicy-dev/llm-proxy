@@ -26,6 +26,7 @@ TARGET_DOMAINS = [
     "api.google.com",
     "api.mistral.ai",
     "opencode.ai",
+    "amazonaws.com",
 ]
 
 _executor = ThreadPoolExecutor(max_workers=10)
@@ -102,6 +103,10 @@ class LLMTracker:
             flow.metadata["start_time"] = datetime.now()
 
     def response(self, flow: http.HTTPFlow):
+        # debug: log all responses to file
+        with open("/tmp/mitm_debug.log", "a") as f:
+            f.write(f"{datetime.now()} | {flow.request.pretty_host} | {flow.request.url[:100]} | target={self._is_target(flow)}\n")
+
         if not self._is_target(flow):
             return
 
@@ -113,7 +118,12 @@ class LLMTracker:
         if status_code == 403:
             ctx.log.error(f"[❌ 地区封锁] 访问 {url} 被 Cloudflare 拦截 (403)。请检查服务器 IP 或挂载上游代理。")
 
-        _executor.submit(self._save_qa_and_notify, pane_id, flow) if pane_id else _executor.submit(self._save_to_db, flow)
+        pane_id = flow.request.headers.get("x-pane-id", "unknown")
+        try:
+            _executor.submit(self._save_qa_and_notify, pane_id, flow)
+        except Exception as e:
+            with open("/tmp/mitm_debug.log", "a") as f:
+                f.write(f"SUBMIT ERROR: {e}\n")
 
     def _extract_llm_answer(self, body: str) -> str:
         """Extract text content from LLM API response."""
@@ -175,7 +185,7 @@ class LLMTracker:
             token_usage = self._extract_token_usage(res_body)
 
             if not answer:
-                return
+                answer = res_body[:2000] if res_body else "(empty/streaming)"
 
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
@@ -193,6 +203,8 @@ class LLMTracker:
             self._notify_tg(pane_id, msg, record_id if len(answer) > TG_PREVIEW_LEN else None)
         except Exception as e:
             ctx.log.error(f"[QA SAVE ERROR] {e}")
+            with open("/tmp/mitm_debug.log", "a") as f:
+                f.write(f"QA SAVE ERROR: {e}\n")
 
     def _notify_tg_from_flow(self, pane_id: str, flow: http.HTTPFlow):
         self._save_qa_and_notify(pane_id, flow)
